@@ -1,0 +1,14 @@
+services:
+  ci-drill:
+    build: .
+    image: ci-disk-drill:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - runs:/data
+    environment:
+      - RUNS_DIR=/data/runs
+    restart: unless-stopped
+
+volumes:
+  runs:

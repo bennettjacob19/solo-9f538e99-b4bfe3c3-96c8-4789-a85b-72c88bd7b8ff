@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>固件 CI 工作盘演练</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #0e1320; color: #e7ebf4; }
+  header { padding: 18px 28px; background: #151c2e; border-bottom: 1px solid #26304a; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 6px 0 0; color: #93a0bd; font-size: 13px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 28px 60px; }
+  .card { background: #151c2e; border: 1px solid #26304a; border-radius: 10px;
+          padding: 18px 20px; margin-bottom: 18px; }
+  .card h2 { margin: 0 0 12px; font-size: 16px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #2a3550; padding: 6px 8px; font-size: 13px; text-align: left; }
+  th { background: #1a2338; color: #aebadb; font-weight: 600; }
+  input[type=text], input[type=number] { width: 100%; background: #0e1424; color: #e7ebf4;
+    border: 1px solid #2f3c5e; border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+  input:focus { outline: 1px solid #4f7cff; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; }
+  .row3 label { display: block; font-size: 13px; color: #aebadb; margin-bottom: 5px; }
+  .btns { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+  button, .btn { background: #2f6bff; color: #fff; border: 0; border-radius: 7px;
+    padding: 9px 18px; font-size: 14px; cursor: pointer; text-decoration: none;
+    display: inline-block; }
+  button.ghost, .btn.ghost { background: #232d47; color: #c4cfec; }
+  button:hover, .btn:hover { filter: brightness(1.12); }
+  .ok { border-left: 5px solid #2ecc71; }
+  .err { border-left: 5px solid #ff5d5d; }
+  .warn { border-left: 5px solid #f5b041; }
+  .stat { display: inline-block; margin: 4px 18px 4px 0; font-size: 14px; }
+  .stat b { color: #8fd3ff; font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+  .tag.build { background: #1d3a2a; color: #7fe0a8; }
+  .tag.delete { background: #3a2a1d; color: #f0b27a; }
+  .tag.rerun { background: #3a1d2a; color: #f08fc0; }
+  .muted { color: #93a0bd; font-size: 13px; }
+  ul.errors { margin: 8px 0 0; padding-left: 20px; color: #ff9d9d; font-size: 13px; }
+  code { background: #0e1424; padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>固件 CI 工作盘演练</h1>
+  <p>容量吃紧时，验证删掉哪些中间产物仍能跑完：最多 10 步依赖、产物字节数、目标步骤、
+     产物占用上限与重跑总次数上限。有解则按方案串行真实落盘，无解则提示且不写产物。</p>
+</header>
+<main>
+
+<div class="card">
+  <h2>内置样例</h2>
+  {% for key, s in samples.items() %}
+  <div class="stat">
+    <b>{{ s.title }}</b>
+    <span class="muted">容量 {{ s.capacity }} B · 重跑上限 {{ s.rerun_limit }} · 目标 {{ s.target }}</span>
+    <button type="button" class="ghost" onclick="loadSample('{{ key }}', false)">载入</button>
+    <button type="button" onclick="loadSample('{{ key }}', true)">试跑</button>
+  </div>
+  {% endfor %}
+</div>
+
+{% if result %}
+  {% if result.kind == 'input_error' %}
+  <div class="card err">
+    <h2>输入有误</h2>
+    <ul class="errors">{% for e in result.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% elif result.kind == 'unsolvable' %}
+  <div class="card warn">
+    <h2>无解：未写入任何产物</h2>
+    <p>{{ result.reason }}</p>
+  </div>
+  {% else %}
+    {% set meta = result.meta %}
+    {% if result.ok %}
+    <div class="card ok">
+      <h2>执行成功</h2>
+    {% else %}
+    <div class="card err">
+      <h2>执行失败（已停下并清除半成品）</h2>
+      <p>{{ meta.error }}</p>
+    {% endif %}
+      <div>
+        <span class="stat">占用峰值 <b>{{ meta.peak }}</b> / 上限 {{ meta.capacity }} 字节</span>
+        <span class="stat">重跑 <b>{{ meta.reruns }}</b> 次</span>
+        <span class="stat">方案 {{ meta.plan_len }} 步，实际记录 {{ meta.events|length }} 步</span>
+        <span class="stat">最终落盘 <b>{{ meta.final_usage }}</b> 字节</span>
+        <span class="stat">用时 {{ meta.elapsed_ms }} ms</span>
+      </div>
+      <h2 style="margin-top:14px">实际执行 / 删除 / 重跑顺序</h2>
+      <table>
+        <tr><th>#</th><th>操作</th><th>步骤</th><th>本步产物(字节)</th><th>操作后占用(字节)</th><th>备注</th></tr>
+        {% for e in meta.events %}
+        <tr>
+          <td>{{ e.seq }}</td>
+          <td>
+            {% if e.op == 'build' %}<span class="tag build">构建</span>
+            {% elif e.op == 'rerun' %}<span class="tag rerun">重建·重跑</span>
+            {% else %}<span class="tag delete">删除·回收</span>{% endif %}
+          </td>
+          <td>{{ e.step }}</td>
+          <td>{{ e.size if e.op != 'delete' else '—' }}</td>
+          <td>{{ e.usage }}</td>
+          <td class="muted">{{ e.note }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% if result.ok %}
+      <div class="btns">
+        <a class="btn" href="{{ url_for('download', run_id=meta.run_id) }}">
+          下载目标产物 {{ meta.target_file }}</a>
+        <span class="muted" style="align-self:center">运行目录 runs/{{ meta.run_id }}</span>
+      </div>
+      {% endif %}
+    </div>
+  {% endif %}
+{% endif %}
+
+<div class="card">
+  <h2>演练参数</h2>
+  <form id="mainform" method="post" action="{{ url_for('run') }}">
+    <table>
+      <tr><th style="width:36px">#</th><th>步骤名</th><th>依赖（逗号分隔，可空）</th><th>产物字节数</th></tr>
+      {% for i in range(10) %}
+      <tr>
+        <td>{{ i + 1 }}</td>
+        <td><input type="text" name="name_{{ i }}" value="{{ rows[i].name }}"
+                   placeholder="如 compile_kernel" maxlength="32"></td>
+        <td><input type="text" name="deps_{{ i }}" value="{{ rows[i].deps }}"
+                   placeholder="如 fetch_sources,toolchain"></td>
+        <td><input type="number" name="size_{{ i }}" value="{{ rows[i].size }}"
+                   min="1" max="{{ max_size }}" placeholder="字节"></td>
+      </tr>
+      {% endfor %}
+    </table>
+    <div class="row3">
+      <div>
+        <label>目标步骤</label>
+        <input type="text" name="target" value="{{ target }}" placeholder="要建成并下载的步骤名">
+      </div>
+      <div>
+        <label>产物占用上限（字节，≤ {{ max_capacity }}）</label>
+        <input type="number" name="capacity" value="{{ capacity }}" min="1" max="{{ max_capacity }}">
+      </div>
+      <div>
+        <label>重跑总次数上限（0~100）</label>
+        <input type="number" name="rerun_limit" value="{{ rerun_limit }}" min="0" max="100">
+      </div>
+    </div>
+    <div class="btns">
+      <button type="submit">求解并执行</button>
+      <button type="button" class="ghost" onclick="clearAll()">清空</button>
+    </div>
+  </form>
+  <p class="muted" style="margin-bottom:0">
+    规则：依赖文件须留到本步写完，回收只在步骤之间；写新产物时保留文件与未写完的半成品都占额度；
+    删掉的产物再次用到须重建，每重建一次计一次重跑；写入失败立即停下、清除半成品并报告。
+    产物内容 = SHA-256(步骤名 + 各依赖文件内容) 派生的确定性字节流，重建结果逐字节一致。
+  </p>
+</div>
+
+</main>
+<script>
+const SAMPLES = {{ samples | tojson }};
+function loadSample(key, autorun) {
+  const s = SAMPLES[key];
+  clearAll();
+  s.steps.forEach((st, i) => {
+    document.querySelector(`[name=name_${i}]`).value = st.name;
+    document.querySelector(`[name=deps_${i}]`).value = st.deps;
+    document.querySelector(`[name=size_${i}]`).value = st.size;
+  });
+  document.querySelector('[name=target]').value = s.target;
+  document.querySelector('[name=capacity]').value = s.capacity;
+  document.querySelector('[name=rerun_limit]').value = s.rerun_limit;
+  if (autorun) document.getElementById('mainform').submit();
+}
+function clearAll() {
+  document.querySelectorAll('#mainform input').forEach(el => el.value = '');
+}
+</script>
+</body>
+</html>

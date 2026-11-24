@@ -1,0 +1,6 @@
+.git
+__pycache__/
+*.pyc
+runs/
+verify_samples.py
+README.md
